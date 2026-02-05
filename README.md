@@ -12,6 +12,7 @@ A Go application that tracks Santander Cycle stations in London in real-time and
   - Yellow: Low availability
   - Red: No bikes available
 - **Station Details**: Click any marker to view bike counts and dock information
+- **Trends & Analytics**: View historical usage patterns with interactive charts showing bike availability over time
 
 ## Project Structure
 
@@ -144,6 +145,28 @@ The server will start at `http://localhost:8080` and display an interactive map 
 
 - `GET /` - Serves the interactive map interface
 - `GET /api/stations` - Returns current station data as JSON
+- `GET /api/history` - Returns historical usage trends over time aggregated from all snapshots (R2 backend only)
+
+### History API Response Format
+
+The `/api/history` endpoint returns aggregate statistics from all available snapshots:
+
+```json
+{
+  "dataPoints": [
+    {
+      "timestamp": "2026-02-05T16:45:00Z",
+      "totalBikes": 5432,
+      "totalEBikes": 892,
+      "totalEmptyDocks": 4120,
+      "stationCount": 800
+    },
+    ...
+  ]
+}
+```
+
+This can be used to visualize trends in bike availability over time.
 
 ## Data Format
 
@@ -213,7 +236,22 @@ timestamp	id	name	lat	long	nb_bikes	nb_standard_bikes	nb_ebikes	nb_empty_docks	n
   - [x] Update server to auto-detect storage backend via USE_R2 env var
   - [x] Support both local file and R2 modes
 
-- [ ] **5. Configure Railway environment variables**
+- [x] **5. Add historical data API**
+  - [x] Create HistoricalDataStore interface
+  - [x] Implement GetHistoricalData in R2Storage (aggregate statistics across all snapshots)
+  - [x] Add /api/history endpoint
+  - [x] Return time-series data showing usage trends from start date to now
+
+- [x] **6. Update frontend for trends visualization**
+  - [x] Add Chart.js library for data visualization
+  - [x] Create modal dialog for history view
+  - [x] Add "View Trends" button to info panel
+  - [x] Fetch historical data from /api/history
+  - [x] Display line chart with Total Bikes, E-Bikes, Empty Docks
+  - [x] Show summary statistics (current, average, peak, lowest)
+  - [x] Error handling for missing historical data
+
+- [ ] **7. Configure Railway environment variables**
   - [ ] Set `S3_ACCESS_KEY_ID` (from R2)
   - [ ] Set `S3_SECRET_ACCESS_KEY` (from R2)
   - [ ] Set `S3_BUCKET_NAME` (e.g., `city-cycling-data`)
@@ -222,21 +260,22 @@ timestamp	id	name	lat	long	nb_bikes	nb_standard_bikes	nb_ebikes	nb_empty_docks	n
   - [ ] Set `USE_R2` to `true`
   - [ ] Set `PORT` to `8080`
 
-- [ ] **6. Deploy web server**
+- [ ] **7. Deploy web server**
   - [ ] Create service in Railway with Go buildpack
   - [ ] Set start command: `go run ./cmd/server`
   - [ ] Deploy
 
-- [ ] **7. Set up cron job for collector**
+- [ ] **8. Set up cron job for collector**
   - [ ] Create separate Railway service for collector
   - [ ] Set start command: `go run ./cmd/collector-r2 -once`
   - [ ] Configure Railway Cron: every 5 minutes (`*/5 * * * *`)
   - [ ] Deploy
 
-- [ ] **8. Verify deployment**
+- [ ] **9. Verify deployment**
   - [ ] Check web server is live
   - [ ] Verify TSV files are being uploaded to R2
   - [ ] Check cron job execution in Railway logs
+  - [ ] Test /api/history endpoint to verify historical data is accessible
 
 ### Cost Estimate
 - **Railway**: ~$5-10/month (for both services + free tier cushion)
@@ -245,8 +284,9 @@ timestamp	id	name	lat	long	nb_bikes	nb_standard_bikes	nb_ebikes	nb_empty_docks	n
 
 ## Future Enhancements
 
-- Trend analysis and heatmaps
-- Station capacity predictions
+- Trend analysis and heatmaps by time of day/week
+- Station capacity predictions using historical trends
 - Mobile app support
 - Real-time updates via WebSocket
 - Time-series analytics dashboards
+- Export historical data as CSV/JSON

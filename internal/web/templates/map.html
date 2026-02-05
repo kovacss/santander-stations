@@ -38,11 +38,13 @@
             display: flex;
             gap: 12px;
             margin-top: 8px;
+            flex-wrap: wrap;
         }
         .legend-item {
             display: flex;
             align-items: center;
             gap: 4px;
+            font-size: 12px;
         }
         .legend-dot {
             width: 12px;
@@ -50,7 +52,7 @@
             border-radius: 50%;
         }
         .popup-content {
-            min-width: 180px;
+            min-width: 200px;
         }
         .popup-content h4 {
             margin-bottom: 8px;
@@ -65,9 +67,91 @@
         .popup-content .stat-value {
             font-weight: 600;
         }
+        .popup-content .change {
+            display: flex;
+            justify-content: space-between;
+            margin: 4px 0;
+            font-size: 13px;
+            border-top: 1px solid #eee;
+            padding-top: 4px;
+            margin-top: 4px;
+        }
         .bikes-standard { color: #2196F3; }
         .bikes-ebike { color: #9C27B0; }
         .docks-empty { color: #4CAF50; }
+        .change-positive { color: #4CAF50; font-weight: 600; }
+        .change-negative { color: #F44336; font-weight: 600; }
+
+        /* Time slider styles */
+        .time-controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            z-index: 1000;
+            background: white;
+            padding: 16px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+        .time-display {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            font-size: 13px;
+        }
+        .time-slider-container {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        .time-slider {
+            flex: 1;
+            height: 6px;
+            border-radius: 3px;
+            background: #ddd;
+            outline: none;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+        .time-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #007BFF;
+            cursor: pointer;
+            border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .time-slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #007BFF;
+            cursor: pointer;
+            border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .time-slider-label {
+            font-size: 12px;
+            color: #666;
+            min-width: 50px;
+        }
+        .comparison-info {
+            font-size: 12px;
+            color: #666;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #eee;
+        }
+        .loading {
+            text-align: center;
+            color: #666;
+            padding: 8px 0;
+        }
     </style>
 </head>
 <body>
@@ -91,7 +175,29 @@
         </div>
     </div>
 
+    <!-- Time Slider Controls -->
+    <div class="time-controls" id="time-controls" style="display: none;">
+        <div class="time-display">
+            <div>
+                <strong>Viewing:</strong>
+                <span id="time-end-display">--</span>
+            </div>
+        </div>
+        <div class="time-slider-container">
+            <span class="time-slider-label" id="time-range-label">0 / 0</span>
+            <input type="range" id="time-slider" class="time-slider" min="0" max="0" value="0" />
+        </div>
+        <div class="comparison-info">
+            Drag the slider to see bike availability at different times. <span id="loading-indicator" class="loading" style="display: none;">Loading data...</span>
+        </div>
+    </div>
+
     <script>
+        // State management
+        let allHistory = [];
+        let markers = {};
+        let snapshotAbortController = null;
+
         // Initialize map centered on London
         const map = L.map('map').setView([51.505, -0.09], 13);
 
@@ -108,19 +214,39 @@
             return '#4CAF50'; // Green - available
         }
 
+        // Get highlight color based on change in bikes
+        function getChangeHighlight(oldBikes, newBikes) {
+            const change = newBikes - oldBikes;
+            if (change > 5) return { borderColor: '#4CAF50', borderWidth: 3 }; // Green - increased
+            if (change < -5) return { borderColor: '#F44336', borderWidth: 3 }; // Red - decreased
+            return null; // No significant change
+        }
+
         // Create a circle marker for a station
-        function createMarker(station) {
+        function createMarker(station, comparison = null) {
             const color = getMarkerColor(station);
-            const marker = L.circleMarker([station.lat, station.lng], {
+            const markerOptions = {
                 radius: 8,
                 fillColor: color,
                 color: '#fff',
                 weight: 2,
                 opacity: 1,
                 fillOpacity: 0.8
-            });
+            };
 
-            const popupContent = `
+            // Apply change highlight if provided
+            if (comparison && comparison.oldBikes !== undefined) {
+                const highlight = getChangeHighlight(comparison.oldBikes, station.nbBikes);
+                if (highlight) {
+                    markerOptions.color = highlight.borderColor;
+                    markerOptions.weight = highlight.borderWidth;
+                }
+            }
+
+            const marker = L.circleMarker([station.lat, station.lng], markerOptions);
+
+            // Build popup content
+            let popupContent = `
                 <div class="popup-content">
                     <h4>${station.name}</h4>
                     <div class="stat">
@@ -139,15 +265,154 @@
                         <span>Total capacity:</span>
                         <span class="stat-value">${station.nbDocks}</span>
                     </div>
-                </div>
             `;
+
+            // Add change info if available
+            if (comparison && comparison.oldBikes !== undefined) {
+                const bikeDiff = station.nbBikes - comparison.oldBikes;
+                const diffClass = bikeDiff >= 0 ? 'change-positive' : 'change-negative';
+                const sign = bikeDiff >= 0 ? '+' : '';
+                popupContent += `
+                    <div class="change">
+                        <span>Change since last period:</span>
+                        <span class="${diffClass}">${sign}${bikeDiff}</span>
+                    </div>
+                `;
+            }
+
+            popupContent += '</div>';
             marker.bindPopup(popupContent);
 
             return marker;
         }
 
-        // Fetch and display stations
-        async function loadStations() {
+        // Format timestamp for display
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleString([], {
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+
+        // Load historical data
+        async function loadHistoricalData() {
+            try {
+                const response = await fetch('/api/history');
+                if (!response.ok) {
+                    console.error('Failed to load history:', response.status);
+                    return;
+                }
+
+                const data = await response.json();
+                if (!data.dataPoints || data.dataPoints.length < 1) {
+                    console.log('No historical data points available');
+                    return;
+                }
+
+                // Reverse so oldest is at index 0 (left) and newest at max (right)
+                allHistory = data.dataPoints.reverse();
+
+                // Setup slider: left = oldest, right = latest
+                const slider = document.getElementById('time-slider');
+                slider.max = allHistory.length - 1;
+                slider.value = allHistory.length - 1; // Start at latest (rightmost)
+
+                // Update UI
+                document.getElementById('time-controls').style.display = 'block';
+
+                updateTimeDisplay();
+                slider.addEventListener('input', updateView);
+
+                // Initial view - load latest
+                updateView();
+            } catch (error) {
+                console.error('Failed to load historical data:', error);
+            }
+        }
+
+        // Update time display in slider
+        function updateTimeDisplay() {
+            const slider = document.getElementById('time-slider');
+            const index = parseInt(slider.value);
+
+            if (allHistory.length === 0) return;
+
+            const currentData = allHistory[index];
+
+            document.getElementById('time-end-display').textContent = formatTime(currentData.timestamp);
+            document.getElementById('time-range-label').textContent = `${index + 1} / ${allHistory.length}`;
+        }
+
+        // Update map view based on slider position
+        async function updateView() {
+            updateTimeDisplay();
+
+            const slider = document.getElementById('time-slider');
+            const index = parseInt(slider.value);
+
+            // Clear existing markers
+            Object.values(markers).forEach(marker => map.removeLayer(marker));
+            markers = {};
+
+            if (allHistory.length === 0) return;
+
+            // Abort any pending snapshot request
+            if (snapshotAbortController) {
+                snapshotAbortController.abort();
+            }
+            snapshotAbortController = new AbortController();
+
+            const indicator = document.getElementById('loading-indicator');
+            indicator.style.display = 'inline';
+
+            try {
+                const currentData = allHistory[index];
+
+                // Fetch station data for this specific timestamp
+                const timestamp = new Date(currentData.timestamp).toISOString();
+                const response = await fetch(
+                    `/api/history/snapshot?timestamp=${encodeURIComponent(timestamp)}`,
+                    { signal: snapshotAbortController.signal }
+                );
+
+                if (!response.ok) {
+                    console.error('Failed to load snapshot:', response.status);
+                    return;
+                }
+
+                const snapshotData = await response.json();
+                const stations = snapshotData.stations || [];
+
+                // Update info panel with current timestamp and bike count
+                document.getElementById('last-update').textContent =
+                    `${formatTime(currentData.timestamp)} (${currentData.totalBikes} bikes available)`;
+
+                // Display all stations for this timestamp
+                stations.forEach(station => {
+                    const marker = createMarker(station);
+                    marker.addTo(map);
+                    markers[station.id] = marker;
+                });
+
+                console.log(`Loaded ${stations.length} stations for ${formatTime(currentData.timestamp)}`);
+            } catch (error) {
+                // Ignore abort errors (expected when user switches quickly)
+                if (error.name === 'AbortError') {
+                    console.log('Snapshot request aborted');
+                    return;
+                }
+                console.error('Failed to load snapshot data:', error);
+                document.getElementById('last-update').textContent = 'Failed to load snapshot data';
+            } finally {
+                indicator.style.display = 'none';
+            }
+        }
+
+        // Fetch and display latest stations initially
+        async function loadLatestStations() {
             try {
                 const response = await fetch('/api/stations');
                 const data = await response.json();
@@ -161,7 +426,9 @@
 
                 // Add markers for all stations
                 data.stations.forEach(station => {
-                    createMarker(station).addTo(map);
+                    const marker = createMarker(station);
+                    marker.addTo(map);
+                    markers[station.id] = marker;
                 });
 
                 console.log(`Loaded ${data.stations.length} stations`);
@@ -171,8 +438,14 @@
             }
         }
 
-        // Load stations on page load
-        loadStations();
+        // Initialize
+        async function initialize() {
+            await loadLatestStations();
+            await loadHistoricalData();
+        }
+
+        // Load on page load
+        initialize();
     </script>
 </body>
 </html>

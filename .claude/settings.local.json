@@ -3,7 +3,8 @@
     "allow": [
       "WebFetch(domain:tfl.gov.uk)",
       "Bash(go mod init:*)",
-      "Bash(timeout 5 go run:*)"
+      "Bash(timeout 5 go run:*)",
+      "Bash(go build:*)"
     ]
   }
 }

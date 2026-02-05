@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -298,4 +299,97 @@ func (r *R2Storage) BucketExists(ctx context.Context) (bool, error) {
 
 	// Return error with more details for debugging
 	return false, fmt.Errorf("failed to access bucket '%s': %w", r.bucket, err)
+}
+
+// HistoricalDataPoint represents a snapshot in time with aggregate statistics.
+type HistoricalDataPoint struct {
+	Timestamp       time.Time
+	TotalBikes      int
+	TotalEBikes     int
+	TotalEmptyDocks int
+	StationCount    int
+}
+
+// GetHistoricalData returns aggregate statistics for all available snapshots.
+func (r *R2Storage) GetHistoricalData(ctx context.Context) ([]HistoricalDataPoint, error) {
+	keys, err := r.ListSnapshots(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var dataPoints []HistoricalDataPoint
+
+	for _, key := range keys {
+		stations, timestamp, err := r.GetSnapshot(ctx, key)
+		if err != nil {
+			log.Printf("Failed to read snapshot %s: %v", key, err)
+			continue
+		}
+
+		// Calculate aggregates
+		totalBikes := 0
+		totalEBikes := 0
+		totalEmptyDocks := 0
+
+		for _, station := range stations {
+			totalBikes += station.NbBikes
+			totalEBikes += station.NbEBikes
+			totalEmptyDocks += station.NbEmptyDocks
+		}
+
+		dataPoints = append(dataPoints, HistoricalDataPoint{
+			Timestamp:       timestamp,
+			TotalBikes:      totalBikes,
+			TotalEBikes:     totalEBikes,
+			TotalEmptyDocks: totalEmptyDocks,
+			StationCount:    len(stations),
+		})
+	}
+
+	return dataPoints, nil
+}
+
+// GetSnapshotByTimestamp returns station data for the closest matching timestamp.
+func (r *R2Storage) GetSnapshotByTimestamp(ctx context.Context, targetTime time.Time) ([]tfl.Station, error) {
+	keys, err := r.ListSnapshots(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list snapshots: %w", err)
+	}
+
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("no snapshots available")
+	}
+
+	// Find the snapshot with timestamp closest to the target time
+	var closestKey string
+	var closestDiff time.Duration
+	closestDiff = time.Duration(1<<63 - 1) // Max duration
+
+	for _, key := range keys {
+		_, timestamp, err := r.GetSnapshot(ctx, key)
+		if err != nil {
+			continue
+		}
+
+		diff := timestamp.Sub(targetTime)
+		if diff < 0 {
+			diff = -diff
+		}
+
+		if diff < closestDiff {
+			closestDiff = diff
+			closestKey = key
+		}
+	}
+
+	if closestKey == "" {
+		return nil, fmt.Errorf("no matching snapshot found for timestamp")
+	}
+
+	stations, _, err := r.GetSnapshot(ctx, closestKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get snapshot: %w", err)
+	}
+
+	return stations, nil
 }
