@@ -116,11 +116,29 @@ The collector stores data using the same TSV format with columns:
 
 Start the interactive map server:
 
+**Local Development (reads from local TSV files):**
 ```bash
 go run ./cmd/server
 ```
 
-The server will start at `http://localhost:8080` and display an interactive map showing all 800 Santander Cycle stations.
+**Production (reads from Cloudflare R2):**
+```bash
+USE_R2=true go run ./cmd/server
+```
+
+Or set environment variables:
+```bash
+export S3_ACCESS_KEY_ID=your_key
+export S3_SECRET_ACCESS_KEY=your_secret
+export S3_ENDPOINT=https://xxxxx.r2.cloudflarestorage.com
+export S3_BUCKET_NAME=your-bucket
+export S3_REGION=auto
+export USE_R2=true
+
+go run ./cmd/server
+```
+
+The server will start at `http://localhost:8080` and display an interactive map showing all 800 Santander Cycle stations with the latest data from your configured storage backend.
 
 ## API Endpoints
 
@@ -177,36 +195,45 @@ timestamp	id	name	lat	long	nb_bikes	nb_standard_bikes	nb_ebikes	nb_empty_docks	n
   - [x] Generate API token with R2 access (`S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`)
   - [x] Note the bucket URL endpoint
 
-- [ ] **2. Configure R2 collector**
+- [x] **2. Configure R2 collector**
   - [x] Create R2 storage package with AWS SDK v2
   - [x] Create collector-r2 command (separate from local collector)
   - [x] Add .env file support (godotenv)
   - [x] Test locally with .env file
 
-- [ ] **3. Create Railway project**
-  - [ ] Sign up at [Railway.app](https://railway.app)
-  - [ ] Create new project
-  - [ ] Connect GitHub repository
+- [x] **3. Create Railway project**
+  - [x] Sign up at [Railway.app](https://railway.app)
+  - [x] Create new project
+  - [x] Connect GitHub repository
 
-- [ ] **4. Configure Railway environment variables**
+- [x] **4. Update web server**
+  - [x] Create DataStore interface (supports both local and R2)
+  - [x] Add R2 support to R2Storage (ReadLatestStations, ListAvailableTimestamps)
+  - [x] Update Handler to use DataStore interface
+  - [x] Update server to auto-detect storage backend via USE_R2 env var
+  - [x] Support both local file and R2 modes
+
+- [ ] **5. Configure Railway environment variables**
   - [ ] Set `S3_ACCESS_KEY_ID` (from R2)
   - [ ] Set `S3_SECRET_ACCESS_KEY` (from R2)
   - [ ] Set `S3_BUCKET_NAME` (e.g., `city-cycling-data`)
   - [ ] Set `S3_ENDPOINT` (Cloudflare R2 endpoint)
+  - [ ] Set `S3_REGION` (default: `auto`)
+  - [ ] Set `USE_R2` to `true`
   - [ ] Set `PORT` to `8080`
 
-- [ ] **5. Deploy web server**
+- [ ] **6. Deploy web server**
   - [ ] Create service in Railway with Go buildpack
   - [ ] Set start command: `go run ./cmd/server`
   - [ ] Deploy
 
-- [ ] **6. Set up cron job for collector**
+- [ ] **7. Set up cron job for collector**
   - [ ] Create separate Railway service for collector
-  - [ ] Set start command: `go run ./cmd/collector -once`
+  - [ ] Set start command: `go run ./cmd/collector-r2 -once`
   - [ ] Configure Railway Cron: every 5 minutes (`*/5 * * * *`)
   - [ ] Deploy
 
-- [ ] **7. Verify deployment**
+- [ ] **8. Verify deployment**
   - [ ] Check web server is live
   - [ ] Verify TSV files are being uploaded to R2
   - [ ] Check cron job execution in Railway logs

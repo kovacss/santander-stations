@@ -133,6 +133,41 @@ func (r *R2Storage) ListSnapshots(ctx context.Context) ([]string, error) {
 	return keys, nil
 }
 
+// ReadLatestStations reads the most recent snapshot from R2.
+func (r *R2Storage) ReadLatestStations() ([]tfl.Station, time.Time, error) {
+	ctx := context.Background()
+	keys, err := r.ListSnapshots(ctx)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+
+	if len(keys) == 0 {
+		return nil, time.Time{}, fmt.Errorf("no snapshots found in R2 bucket")
+	}
+
+	// Get the most recent snapshot (first in the list)
+	return r.GetSnapshot(ctx, keys[0])
+}
+
+// ListAvailableTimestamps returns all available snapshot timestamps from R2.
+func (r *R2Storage) ListAvailableTimestamps() ([]time.Time, error) {
+	ctx := context.Background()
+	keys, err := r.ListSnapshots(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var timestamps []time.Time
+	for _, key := range keys {
+		_, ts, err := r.GetSnapshot(ctx, key)
+		if err == nil {
+			timestamps = append(timestamps, ts)
+		}
+	}
+
+	return timestamps, nil
+}
+
 // GetSnapshot downloads and parses a specific snapshot from R2.
 func (r *R2Storage) GetSnapshot(ctx context.Context, key string) ([]tfl.Station, time.Time, error) {
 	result, err := r.client.GetObject(ctx, &s3.GetObjectInput{

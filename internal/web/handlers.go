@@ -35,13 +35,13 @@ type StationsResponse struct {
 
 // Handler provides HTTP handlers for the web interface.
 type Handler struct {
-	store     *storage.TSVStorage
+	store     storage.DataStore
 	tflClient *tfl.Client
 	templates *template.Template
 }
 
 // NewHandler creates a new web handler.
-func NewHandler(store *storage.TSVStorage, tflClient *tfl.Client) (*Handler, error) {
+func NewHandler(store storage.DataStore, tflClient *tfl.Client) (*Handler, error) {
 	tmpl, err := template.ParseFS(templatesFS, "templates/*.html")
 	if err != nil {
 		return nil, err
