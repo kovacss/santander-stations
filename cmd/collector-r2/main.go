@@ -16,7 +16,7 @@ import (
 
 func main() {
 	var (
-		interval = flag.Duration("interval", 5*time.Minute, "Fetch interval (set to 0 for one-shot mode)")
+		interval = flag.Duration("interval", 15*time.Minute, "Fetch interval (set to 0 for one-shot mode)")
 		oneShot  = flag.Bool("once", false, "Run once and exit")
 	)
 	flag.Parse()
