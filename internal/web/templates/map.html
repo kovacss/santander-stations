@@ -152,6 +152,54 @@
             color: #666;
             padding: 8px 0;
         }
+
+        /* Playback controls */
+        .playback-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #eee;
+        }
+        .play-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            border: none;
+            border-radius: 50%;
+            background: #007BFF;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        .play-btn:hover {
+            background: #0056b3;
+        }
+        .play-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .speed-select {
+            padding: 6px 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 12px;
+            background: white;
+        }
+        .playback-status {
+            font-size: 12px;
+            color: #666;
+            margin-left: auto;
+        }
+
+        /* Marker transition styles - applied via JS */
+        .leaflet-interactive {
+            transition: fill 0.3s ease, fill-opacity 0.3s ease, stroke 0.3s ease;
+        }
     </style>
 </head>
 <body>
@@ -190,6 +238,18 @@
         <div class="comparison-info">
             Drag the slider to see bike availability at different times. <span id="loading-indicator" class="loading" style="display: none;">Loading data...</span>
         </div>
+        <div class="playback-controls">
+            <button id="play-btn" class="play-btn" title="Play/Pause">
+                <span id="play-icon">&#9658;</span>
+            </button>
+            <select id="speed-select" class="speed-select" title="Playback speed">
+                <option value="2000">0.5x</option>
+                <option value="1000" selected>1x</option>
+                <option value="500">2x</option>
+                <option value="250">4x</option>
+            </select>
+            <span class="playback-status" id="playback-status"></span>
+        </div>
     </div>
 
     <script>
@@ -197,6 +257,10 @@
         let allHistory = [];
         let markers = {};
         let snapshotAbortController = null;
+        let snapshotCache = {}; // Cache for snapshot data
+        let isPlaying = false;
+        let playbackInterval = null;
+        let currentStations = []; // Current station data for smooth updates
 
         // Initialize map centered on London
         const map = L.map('map').setView([51.505, -0.09], 13);
@@ -244,8 +308,15 @@
             }
 
             const marker = L.circleMarker([station.lat, station.lng], markerOptions);
+            marker.stationData = station; // Store station data for updates
 
-            // Build popup content
+            updateMarkerPopup(marker, station, comparison);
+
+            return marker;
+        }
+
+        // Update marker popup content
+        function updateMarkerPopup(marker, station, comparison = null) {
             let popupContent = `
                 <div class="popup-content">
                     <h4>${station.name}</h4>
@@ -267,7 +338,6 @@
                     </div>
             `;
 
-            // Add change info if available
             if (comparison && comparison.oldBikes !== undefined) {
                 const bikeDiff = station.nbBikes - comparison.oldBikes;
                 const diffClass = bikeDiff >= 0 ? 'change-positive' : 'change-negative';
@@ -282,8 +352,29 @@
 
             popupContent += '</div>';
             marker.bindPopup(popupContent);
+        }
 
-            return marker;
+        // Update existing marker with new station data (smooth transition)
+        function updateMarker(marker, station, comparison = null) {
+            const color = getMarkerColor(station);
+            const styleOptions = {
+                fillColor: color,
+                color: '#fff',
+                weight: 2
+            };
+
+            // Apply change highlight if provided
+            if (comparison && comparison.oldBikes !== undefined) {
+                const highlight = getChangeHighlight(comparison.oldBikes, station.nbBikes);
+                if (highlight) {
+                    styleOptions.color = highlight.borderColor;
+                    styleOptions.weight = highlight.borderWidth;
+                }
+            }
+
+            marker.setStyle(styleOptions);
+            marker.stationData = station;
+            updateMarkerPopup(marker, station, comparison);
         }
 
         // Format timestamp for display
@@ -324,7 +415,14 @@
                 document.getElementById('time-controls').style.display = 'block';
 
                 updateTimeDisplay();
-                slider.addEventListener('input', updateView);
+                slider.addEventListener('input', () => {
+                    stopPlayback(); // Stop playback when user manually moves slider
+                    updateView();
+                });
+
+                // Playback control listeners
+                document.getElementById('play-btn').addEventListener('click', togglePlayback);
+                document.getElementById('speed-select').addEventListener('change', onSpeedChange);
 
                 // Initial view - load latest
                 updateView();
@@ -346,16 +444,44 @@
             document.getElementById('time-range-label').textContent = `${index + 1} / ${allHistory.length}`;
         }
 
+        // Fetch snapshot data with caching
+        async function fetchSnapshot(timestamp, signal = null) {
+            const cacheKey = timestamp;
+            if (snapshotCache[cacheKey]) {
+                return snapshotCache[cacheKey];
+            }
+
+            const fetchOptions = signal ? { signal } : {};
+            const response = await fetch(
+                `/api/history/snapshot?timestamp=${encodeURIComponent(timestamp)}`,
+                fetchOptions
+            );
+
+            if (!response.ok) {
+                throw new Error(`Failed to load snapshot: ${response.status}`);
+            }
+
+            const data = await response.json();
+            snapshotCache[cacheKey] = data.stations || [];
+            return snapshotCache[cacheKey];
+        }
+
+        // Pre-fetch next snapshot for smoother playback
+        function prefetchNextSnapshot(currentIndex) {
+            if (currentIndex < allHistory.length - 1) {
+                const nextData = allHistory[currentIndex + 1];
+                const timestamp = new Date(nextData.timestamp).toISOString();
+                // Fire and forget - don't await
+                fetchSnapshot(timestamp).catch(() => {});
+            }
+        }
+
         // Update map view based on slider position
         async function updateView() {
             updateTimeDisplay();
 
             const slider = document.getElementById('time-slider');
             const index = parseInt(slider.value);
-
-            // Clear existing markers
-            Object.values(markers).forEach(marker => map.removeLayer(marker));
-            markers = {};
 
             if (allHistory.length === 0) return;
 
@@ -370,36 +496,58 @@
 
             try {
                 const currentData = allHistory[index];
-
-                // Fetch station data for this specific timestamp
                 const timestamp = new Date(currentData.timestamp).toISOString();
-                const response = await fetch(
-                    `/api/history/snapshot?timestamp=${encodeURIComponent(timestamp)}`,
-                    { signal: snapshotAbortController.signal }
-                );
 
-                if (!response.ok) {
-                    console.error('Failed to load snapshot:', response.status);
-                    return;
-                }
+                // Fetch station data (uses cache if available)
+                const stations = await fetchSnapshot(timestamp, snapshotAbortController.signal);
 
-                const snapshotData = await response.json();
-                const stations = snapshotData.stations || [];
+                // Build lookup of previous station data for comparison
+                const previousStations = {};
+                currentStations.forEach(s => {
+                    previousStations[s.id] = s;
+                });
 
-                // Update info panel with current timestamp and bike count
+                // Update info panel
                 document.getElementById('last-update').textContent =
                     `${formatTime(currentData.timestamp)} (${currentData.totalBikes} bikes available)`;
 
-                // Display all stations for this timestamp
+                // Update or create markers with smooth transitions
+                const updatedIds = new Set();
                 stations.forEach(station => {
-                    const marker = createMarker(station);
-                    marker.addTo(map);
-                    markers[station.id] = marker;
+                    const comparison = previousStations[station.id]
+                        ? { oldBikes: previousStations[station.id].nbBikes }
+                        : null;
+
+                    if (markers[station.id]) {
+                        // Update existing marker (smooth transition via CSS)
+                        updateMarker(markers[station.id], station, comparison);
+                    } else {
+                        // Create new marker
+                        const marker = createMarker(station, comparison);
+                        marker.addTo(map);
+                        markers[station.id] = marker;
+                    }
+                    updatedIds.add(station.id);
                 });
 
-                console.log(`Loaded ${stations.length} stations for ${formatTime(currentData.timestamp)}`);
+                // Remove markers that no longer exist in this snapshot
+                Object.keys(markers).forEach(id => {
+                    if (!updatedIds.has(parseInt(id))) {
+                        map.removeLayer(markers[id]);
+                        delete markers[id];
+                    }
+                });
+
+                // Store current stations for next comparison
+                currentStations = stations;
+
+                // Pre-fetch next snapshot during playback
+                if (isPlaying) {
+                    prefetchNextSnapshot(index);
+                }
+
+                console.log(`Updated ${stations.length} stations for ${formatTime(currentData.timestamp)}`);
             } catch (error) {
-                // Ignore abort errors (expected when user switches quickly)
                 if (error.name === 'AbortError') {
                     console.log('Snapshot request aborted');
                     return;
@@ -408,6 +556,78 @@
                 document.getElementById('last-update').textContent = 'Failed to load snapshot data';
             } finally {
                 indicator.style.display = 'none';
+            }
+        }
+
+        // Playback controls
+        function startPlayback() {
+            if (allHistory.length === 0) return;
+
+            const slider = document.getElementById('time-slider');
+            const speedSelect = document.getElementById('speed-select');
+            const interval = parseInt(speedSelect.value);
+
+            // If at the end, restart from beginning
+            if (parseInt(slider.value) >= allHistory.length - 1) {
+                slider.value = 0;
+            }
+
+            isPlaying = true;
+            updatePlaybackUI();
+
+            // Pre-fetch first few snapshots
+            for (let i = 0; i < 3 && i < allHistory.length; i++) {
+                const data = allHistory[parseInt(slider.value) + i];
+                if (data) {
+                    fetchSnapshot(new Date(data.timestamp).toISOString()).catch(() => {});
+                }
+            }
+
+            playbackInterval = setInterval(() => {
+                const currentValue = parseInt(slider.value);
+                if (currentValue >= allHistory.length - 1) {
+                    stopPlayback();
+                    return;
+                }
+                slider.value = currentValue + 1;
+                updateView();
+            }, interval);
+        }
+
+        function stopPlayback() {
+            isPlaying = false;
+            if (playbackInterval) {
+                clearInterval(playbackInterval);
+                playbackInterval = null;
+            }
+            updatePlaybackUI();
+        }
+
+        function togglePlayback() {
+            if (isPlaying) {
+                stopPlayback();
+            } else {
+                startPlayback();
+            }
+        }
+
+        function updatePlaybackUI() {
+            const playIcon = document.getElementById('play-icon');
+            const playbackStatus = document.getElementById('playback-status');
+
+            if (isPlaying) {
+                playIcon.innerHTML = '&#10074;&#10074;'; // Pause icon
+                playbackStatus.textContent = 'Playing...';
+            } else {
+                playIcon.innerHTML = '&#9658;'; // Play icon
+                playbackStatus.textContent = '';
+            }
+        }
+
+        function onSpeedChange() {
+            if (isPlaying) {
+                stopPlayback();
+                startPlayback();
             }
         }
 

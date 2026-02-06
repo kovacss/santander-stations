@@ -87,10 +87,36 @@ func NewHandler(store storage.DataStore, tflClient *tfl.Client) (*Handler, error
 
 // RegisterRoutes registers all HTTP routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/", h.handleMap)
-	mux.HandleFunc("/api/stations", h.handleStations)
-	mux.HandleFunc("/api/history", h.handleHistory)
-	mux.HandleFunc("/api/history/snapshot", h.handleHistorySnapshot)
+	mux.HandleFunc("/", h.withLogging(h.handleMap))
+	mux.HandleFunc("/api/stations", h.withLogging(h.handleStations))
+	mux.HandleFunc("/api/history", h.withLogging(h.handleHistory))
+	mux.HandleFunc("/api/history/snapshot", h.withLogging(h.handleHistorySnapshot))
+}
+
+// withLogging wraps an HTTP handler with request timing and logging.
+func (h *Handler) withLogging(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// Wrap response writer to capture status code
+		lrw := &loggingResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+
+		next(lrw, r)
+
+		duration := time.Since(start)
+		log.Printf("[HTTP] %s %s - %d (%s)", r.Method, r.URL.Path, lrw.statusCode, duration)
+	}
+}
+
+// loggingResponseWriter wraps http.ResponseWriter to capture the status code.
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (lrw *loggingResponseWriter) WriteHeader(code int) {
+	lrw.statusCode = code
+	lrw.ResponseWriter.WriteHeader(code)
 }
 
 // handleMap serves the main map page.

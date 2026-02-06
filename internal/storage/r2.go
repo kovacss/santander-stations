@@ -51,6 +51,11 @@ func NewR2Storage(accessKeyID, secretAccessKey, endpoint, bucket, region, prefix
 
 // WriteStations writes station data to R2 as a timestamped TSV file.
 func (r *R2Storage) WriteStations(ctx context.Context, stations *tfl.Stations) (string, error) {
+	start := time.Now()
+	defer func() {
+		log.Printf("[R2] WriteStations completed in %s (stations=%d)", time.Since(start), len(stations.Stations))
+	}()
+
 	timestamp := time.Now().UTC()
 	key := fmt.Sprintf("%sstations_%s.tsv", r.prefix, timestamp.Format("20060102_150405"))
 
@@ -107,6 +112,11 @@ func (r *R2Storage) WriteStations(ctx context.Context, stations *tfl.Stations) (
 
 // ListSnapshots returns all snapshot objects in R2, sorted by timestamp (newest first).
 func (r *R2Storage) ListSnapshots(ctx context.Context) ([]string, error) {
+	start := time.Now()
+	defer func() {
+		log.Printf("[R2] ListSnapshots completed in %s", time.Since(start))
+	}()
+
 	paginator := s3.NewListObjectsV2Paginator(r.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(r.bucket),
 		Prefix: aws.String(r.prefix),
@@ -136,6 +146,11 @@ func (r *R2Storage) ListSnapshots(ctx context.Context) ([]string, error) {
 
 // ReadLatestStations reads the most recent snapshot from R2.
 func (r *R2Storage) ReadLatestStations() ([]tfl.Station, time.Time, error) {
+	start := time.Now()
+	defer func() {
+		log.Printf("[R2] ReadLatestStations completed in %s", time.Since(start))
+	}()
+
 	ctx := context.Background()
 	keys, err := r.ListSnapshots(ctx)
 	if err != nil {
@@ -171,6 +186,11 @@ func (r *R2Storage) ListAvailableTimestamps() ([]time.Time, error) {
 
 // GetSnapshot downloads and parses a specific snapshot from R2.
 func (r *R2Storage) GetSnapshot(ctx context.Context, key string) ([]tfl.Station, time.Time, error) {
+	start := time.Now()
+	defer func() {
+		log.Printf("[R2] GetSnapshot completed in %s (key=%s)", time.Since(start), key)
+	}()
+
 	result, err := r.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(r.bucket),
 		Key:    aws.String(key),
@@ -312,6 +332,11 @@ type HistoricalDataPoint struct {
 
 // GetHistoricalData returns aggregate statistics for all available snapshots.
 func (r *R2Storage) GetHistoricalData(ctx context.Context) ([]HistoricalDataPoint, error) {
+	start := time.Now()
+	defer func() {
+		log.Printf("[R2] GetHistoricalData completed in %s", time.Since(start))
+	}()
+
 	keys, err := r.ListSnapshots(ctx)
 	if err != nil {
 		return nil, err
@@ -349,8 +374,32 @@ func (r *R2Storage) GetHistoricalData(ctx context.Context) ([]HistoricalDataPoin
 	return dataPoints, nil
 }
 
+// parseTimestampFromKey extracts the timestamp from a snapshot key.
+// Key format: {prefix}stations_YYYYMMDD_HHMMSS.tsv
+func parseTimestampFromKey(key string) (time.Time, error) {
+	// Find "stations_" and extract the timestamp portion
+	idx := strings.Index(key, "stations_")
+	if idx == -1 {
+		return time.Time{}, fmt.Errorf("invalid key format: missing 'stations_' prefix")
+	}
+
+	// Extract YYYYMMDD_HHMMSS portion (15 characters after "stations_")
+	tsStart := idx + len("stations_")
+	if len(key) < tsStart+15 {
+		return time.Time{}, fmt.Errorf("invalid key format: timestamp too short")
+	}
+
+	tsStr := key[tsStart : tsStart+15]
+	return time.Parse("20060102_150405", tsStr)
+}
+
 // GetSnapshotByTimestamp returns station data for the closest matching timestamp.
 func (r *R2Storage) GetSnapshotByTimestamp(ctx context.Context, targetTime time.Time) ([]tfl.Station, error) {
+	start := time.Now()
+	defer func() {
+		log.Printf("[R2] GetSnapshotByTimestamp completed in %s (target=%s)", time.Since(start), targetTime.Format(time.RFC3339))
+	}()
+
 	keys, err := r.ListSnapshots(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list snapshots: %w", err)
@@ -361,13 +410,15 @@ func (r *R2Storage) GetSnapshotByTimestamp(ctx context.Context, targetTime time.
 	}
 
 	// Find the snapshot with timestamp closest to the target time
+	// Parse timestamps from filenames instead of downloading each file
 	var closestKey string
 	var closestDiff time.Duration
 	closestDiff = time.Duration(1<<63 - 1) // Max duration
 
 	for _, key := range keys {
-		_, timestamp, err := r.GetSnapshot(ctx, key)
+		timestamp, err := parseTimestampFromKey(key)
 		if err != nil {
+			log.Printf("[R2] Failed to parse timestamp from key %s: %v", key, err)
 			continue
 		}
 
@@ -385,6 +436,8 @@ func (r *R2Storage) GetSnapshotByTimestamp(ctx context.Context, targetTime time.
 	if closestKey == "" {
 		return nil, fmt.Errorf("no matching snapshot found for timestamp")
 	}
+
+	log.Printf("[R2] GetSnapshotByTimestamp found closest key %s (diff=%s)", closestKey, closestDiff)
 
 	stations, _, err := r.GetSnapshot(ctx, closestKey)
 	if err != nil {
