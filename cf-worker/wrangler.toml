@@ -1,0 +1,25 @@
+name = "city-cycling"
+main = "build/index.js"
+compatibility_date = "2026-11-03"
+
+[build]
+command = "cargo install -q \"worker-build@^0.8\" && worker-build --release"
+
+# D1 database (SQLite). Run `wrangler d1 create city-cycling-db` once, then
+# paste the database_id it prints in here. See ../README.md "Cloudflare
+# Worker Deployment" for the full setup walkthrough.
+[[d1_databases]]
+binding = "DB"
+database_name = "city-cycling-db"
+database_id = "6c340935-2b47-407b-8613-66aa45ba2db4"
+migrations_dir = "migrations"
+
+# Collector cron: every 15 minutes, all day. The 11pm-5am pause (London
+# local time, DST-aware) is enforced in code (src/lib.rs's scheduled
+# handler), not here — a fixed UTC cron window would drift by an hour
+# across the BST/GMT transition.
+[triggers]
+crons = ["*/15 * * * *"]
+
+[observability]
+enabled = true

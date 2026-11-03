@@ -1,0 +1,10 @@
+# Build output (worker-build / wasm-bindgen / esbuild)
+/build
+/target
+
+# Local wrangler dev state (local D1/KV/R2/cache emulation)
+/.wrangler
+
+# Secrets
+.env
+.dev.vars

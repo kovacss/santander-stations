@@ -261,6 +261,7 @@
         let isPlaying = false;
         let playbackInterval = null;
         let currentStations = []; // Current station data for smooth updates
+        let sliderDebounceTimer = null; // Debounce timer for slider drag events
 
         // Initialize map centered on London
         const map = L.map('map').setView([51.505, -0.09], 13);
@@ -417,7 +418,22 @@
                 updateTimeDisplay();
                 slider.addEventListener('input', () => {
                     stopPlayback(); // Stop playback when user manually moves slider
-                    updateView();
+
+                    // Keep the label/count tracking the thumb immediately, but
+                    // debounce the network fetch. Firefox fires many more
+                    // 'input' events per drag than Chromium does, and without
+                    // this, each one aborts the previous in-flight snapshot
+                    // request (visible as NS_BINDING_ABORTED in devtools) and
+                    // the map can end up never applying any of them while
+                    // the user is still dragging.
+                    updateTimeDisplay();
+                    if (sliderDebounceTimer) {
+                        clearTimeout(sliderDebounceTimer);
+                    }
+                    sliderDebounceTimer = setTimeout(() => {
+                        sliderDebounceTimer = null;
+                        updateView();
+                    }, 120);
                 });
 
                 // Playback control listeners
@@ -485,11 +501,16 @@
 
             if (allHistory.length === 0) return;
 
-            // Abort any pending snapshot request
+            // Abort any pending snapshot request. We keep a local reference to
+            // the controller this call owns so that, once the fetch below
+            // resolves, we can tell whether a newer call has since taken
+            // over (and therefore whether it's still safe for us to apply
+            // our results and touch the loading indicator).
             if (snapshotAbortController) {
                 snapshotAbortController.abort();
             }
-            snapshotAbortController = new AbortController();
+            const thisController = new AbortController();
+            snapshotAbortController = thisController;
 
             const indicator = document.getElementById('loading-indicator');
             indicator.style.display = 'inline';
@@ -499,7 +520,15 @@
                 const timestamp = new Date(currentData.timestamp).toISOString();
 
                 // Fetch station data (uses cache if available)
-                const stations = await fetchSnapshot(timestamp, snapshotAbortController.signal);
+                const stations = await fetchSnapshot(timestamp, thisController.signal);
+
+                // A newer call may have superseded us while we were awaiting
+                // the fetch above (e.g. a cached response resolving out of
+                // order). Bail out rather than render a stale snapshot on
+                // top of a fresher one.
+                if (snapshotAbortController !== thisController) {
+                    return;
+                }
 
                 // Build lookup of previous station data for comparison
                 const previousStations = {};
@@ -555,7 +584,12 @@
                 console.error('Failed to load snapshot data:', error);
                 document.getElementById('last-update').textContent = 'Failed to load snapshot data';
             } finally {
-                indicator.style.display = 'none';
+                // Only the most recent call owns the indicator. An older
+                // call that just got aborted must not hide it while a
+                // newer request is still legitimately in flight.
+                if (snapshotAbortController === thisController) {
+                    indicator.style.display = 'none';
+                }
             }
         }
 
@@ -565,7 +599,6 @@
 
             const slider = document.getElementById('time-slider');
             const speedSelect = document.getElementById('speed-select');
-            const interval = parseInt(speedSelect.value);
 
             // If at the end, restart from beginning
             if (parseInt(slider.value) >= allHistory.length - 1) {
@@ -583,21 +616,45 @@
                 }
             }
 
-            playbackInterval = setInterval(() => {
+            // Advance one frame, then wait for that frame's fetch to actually
+            // finish before scheduling the next one. A plain setInterval here
+            // ticks on a fixed clock regardless of whether the previous
+            // snapshot request has resolved - on anything less than an
+            // instant network, each tick aborts the one before it (visible
+            // as NS_BINDING_ABORTED in Firefox) and the map never gets to
+            // apply any of them. This self-paces: it runs as fast as the
+            // chosen speed allows, but never faster than the network can
+            // actually deliver frames.
+            const scheduleNext = () => {
+                if (!isPlaying) return;
+                const interval = parseInt(speedSelect.value);
+                playbackInterval = setTimeout(step, interval);
+            };
+
+            const step = async () => {
+                if (!isPlaying) return;
+
                 const currentValue = parseInt(slider.value);
                 if (currentValue >= allHistory.length - 1) {
                     stopPlayback();
                     return;
                 }
+
                 slider.value = currentValue + 1;
-                updateView();
-            }, interval);
+                await updateView();
+
+                scheduleNext();
+            };
+
+            scheduleNext();
         }
 
         function stopPlayback() {
             isPlaying = false;
             if (playbackInterval) {
-                clearInterval(playbackInterval);
+                // playbackInterval now holds a setTimeout id (see
+                // startPlayback's self-pacing scheduleNext/step chain).
+                clearTimeout(playbackInterval);
                 playbackInterval = null;
             }
             updatePlaybackUI();

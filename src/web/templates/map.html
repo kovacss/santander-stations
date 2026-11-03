@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>London Santander Cycles</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        #map {
+            height: 100vh;
+            width: 100%;
+        }
+        .info-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            background: white;
+            padding: 12px 16px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            font-size: 14px;
+        }
+        .info-panel h3 {
+            margin-bottom: 8px;
+            font-size: 16px;
+        }
+        .legend {
+            display: flex;
+            gap: 12px;
+            margin-top: 8px;
+            flex-wrap: wrap;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+        }
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+        .popup-content {
+            min-width: 200px;
+        }
+        .popup-content h4 {
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        .popup-content .stat {
+            display: flex;
+            justify-content: space-between;
+            margin: 4px 0;
+            font-size: 13px;
+        }
+        .popup-content .stat-value {
+            font-weight: 600;
+        }
+        .popup-content .change {
+            display: flex;
+            justify-content: space-between;
+            margin: 4px 0;
+            font-size: 13px;
+            border-top: 1px solid #eee;
+            padding-top: 4px;
+            margin-top: 4px;
+        }
+        .bikes-standard { color: #2196F3; }
+        .bikes-ebike { color: #9C27B0; }
+        .docks-empty { color: #4CAF50; }
+        .change-positive { color: #4CAF50; font-weight: 600; }
+        .change-negative { color: #F44336; font-weight: 600; }
+
+        /* Time slider styles */
+        .time-controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            z-index: 1000;
+            background: white;
+            padding: 16px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+        .time-display {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            font-size: 13px;
+        }
+        .time-slider-container {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        .time-slider {
+            flex: 1;
+            height: 6px;
+            border-radius: 3px;
+            background: #ddd;
+            outline: none;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+        .time-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #007BFF;
+            cursor: pointer;
+            border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .time-slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #007BFF;
+            cursor: pointer;
+            border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .time-slider-label {
+            font-size: 12px;
+            color: #666;
+            min-width: 50px;
+        }
+        .comparison-info {
+            font-size: 12px;
+            color: #666;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #eee;
+        }
+        .loading {
+            text-align: center;
+            color: #666;
+            padding: 8px 0;
+        }
+
+        /* Playback controls */
+        .playback-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #eee;
+        }
+        .play-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            border: none;
+            border-radius: 50%;
+            background: #007BFF;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        .play-btn:hover {
+            background: #0056b3;
+        }
+        .play-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .speed-select {
+            padding: 6px 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 12px;
+            background: white;
+        }
+        .playback-status {
+            font-size: 12px;
+            color: #666;
+            margin-left: auto;
+        }
+
+        /* Marker transition styles - applied via JS */
+        .leaflet-interactive {
+            transition: fill 0.3s ease, fill-opacity 0.3s ease, stroke 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="info-panel">
+        <h3>Santander Cycles</h3>
+        <div id="last-update">Loading...</div>
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-dot" style="background: #4CAF50;"></div>
+                <span>Available</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-dot" style="background: #FFC107;"></div>
+                <span>Low</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-dot" style="background: #F44336;"></div>
+                <span>Empty</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Time Slider Controls -->
+    <div class="time-controls" id="time-controls" style="display: none;">
+        <div class="time-display">
+            <div>
+                <strong>Viewing:</strong>
+                <span id="time-end-display">--</span>
+            </div>
+        </div>
+        <div class="time-slider-container">
+            <span class="time-slider-label" id="time-range-label">0 / 0</span>
+            <input type="range" id="time-slider" class="time-slider" min="0" max="0" value="0" />
+        </div>
+        <div class="comparison-info">
+            Drag the slider to see bike availability at different times. <span id="loading-indicator" class="loading" style="display: none;">Loading data...</span>
+        </div>
+        <div class="playback-controls">
+            <button id="play-btn" class="play-btn" title="Play/Pause">
+                <span id="play-icon">&#9658;</span>
+            </button>
+            <select id="speed-select" class="speed-select" title="Playback speed">
+                <option value="2000">0.5x</option>
+                <option value="1000" selected>1x</option>
+                <option value="500">2x</option>
+                <option value="250">4x</option>
+            </select>
+            <span class="playback-status" id="playback-status"></span>
+        </div>
+    </div>
+
+    <script>
+        // State management
+        let allHistory = [];
+        let markers = {};
+        let snapshotAbortController = null;
+        let snapshotCache = {}; // Cache for snapshot data
+        let isPlaying = false;
+        let playbackInterval = null;
+        let currentStations = []; // Current station data for smooth updates
+        let sliderDebounceTimer = null; // Debounce timer for slider drag events
+
+        // Initialize map centered on London
+        const map = L.map('map').setView([51.505, -0.09], 13);
+
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        // Determine marker color based on bike availability
+        function getMarkerColor(station) {
+            const ratio = station.nbBikes / station.nbDocks;
+            if (ratio === 0) return '#F44336'; // Red - empty
+            if (ratio < 0.25) return '#FFC107'; // Yellow - low
+            return '#4CAF50'; // Green - available
+        }
+
+        // Get highlight color based on change in bikes
+        function getChangeHighlight(oldBikes, newBikes) {
+            const change = newBikes - oldBikes;
+            if (change > 5) return { borderColor: '#4CAF50', borderWidth: 3 }; // Green - increased
+            if (change < -5) return { borderColor: '#F44336', borderWidth: 3 }; // Red - decreased
+            return null; // No significant change
+        }
+
+        // Create a circle marker for a station
+        function createMarker(station, comparison = null) {
+            const color = getMarkerColor(station);
+            const markerOptions = {
+                radius: 8,
+                fillColor: color,
+                color: '#fff',
+                weight: 2,
+                opacity: 1,
+                fillOpacity: 0.8
+            };
+
+            // Apply change highlight if provided
+            if (comparison && comparison.oldBikes !== undefined) {
+                const highlight = getChangeHighlight(comparison.oldBikes, station.nbBikes);
+                if (highlight) {
+                    markerOptions.color = highlight.borderColor;
+                    markerOptions.weight = highlight.borderWidth;
+                }
+            }
+
+            const marker = L.circleMarker([station.lat, station.lng], markerOptions);
+            marker.stationData = station; // Store station data for updates
+
+            updateMarkerPopup(marker, station, comparison);
+
+            return marker;
+        }
+
+        // Update marker popup content
+        function updateMarkerPopup(marker, station, comparison = null) {
+            let popupContent = `
+                <div class="popup-content">
+                    <h4>${station.name}</h4>
+                    <div class="stat">
+                        <span>Standard bikes:</span>
+                        <span class="stat-value bikes-standard">${station.nbStandardBikes}</span>
+                    </div>
+                    <div class="stat">
+                        <span>E-bikes:</span>
+                        <span class="stat-value bikes-ebike">${station.nbEBikes}</span>
+                    </div>
+                    <div class="stat">
+                        <span>Empty docks:</span>
+                        <span class="stat-value docks-empty">${station.nbEmptyDocks}</span>
+                    </div>
+                    <div class="stat">
+                        <span>Total capacity:</span>
+                        <span class="stat-value">${station.nbDocks}</span>
+                    </div>
+            `;
+
+            if (comparison && comparison.oldBikes !== undefined) {
+                const bikeDiff = station.nbBikes - comparison.oldBikes;
+                const diffClass = bikeDiff >= 0 ? 'change-positive' : 'change-negative';
+                const sign = bikeDiff >= 0 ? '+' : '';
+                popupContent += `
+                    <div class="change">
+                        <span>Change since last period:</span>
+                        <span class="${diffClass}">${sign}${bikeDiff}</span>
+                    </div>
+                `;
+            }
+
+            popupContent += '</div>';
+            marker.bindPopup(popupContent);
+        }
+
+        // Update existing marker with new station data (smooth transition)
+        function updateMarker(marker, station, comparison = null) {
+            const color = getMarkerColor(station);
+            const styleOptions = {
+                fillColor: color,
+                color: '#fff',
+                weight: 2
+            };
+
+            // Apply change highlight if provided
+            if (comparison && comparison.oldBikes !== undefined) {
+                const highlight = getChangeHighlight(comparison.oldBikes, station.nbBikes);
+                if (highlight) {
+                    styleOptions.color = highlight.borderColor;
+                    styleOptions.weight = highlight.borderWidth;
+                }
+            }
+
+            marker.setStyle(styleOptions);
+            marker.stationData = station;
+            updateMarkerPopup(marker, station, comparison);
+        }
+
+        // Format timestamp for display
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleString([], {
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+
+        // Load historical data
+        async function loadHistoricalData() {
+            try {
+                const response = await fetch('/api/history');
+                if (!response.ok) {
+                    console.error('Failed to load history:', response.status);
+                    return;
+                }
+
+                const data = await response.json();
+                if (!data.dataPoints || data.dataPoints.length < 1) {
+                    console.log('No historical data points available');
+                    return;
+                }
+
+                // Reverse so oldest is at index 0 (left) and newest at max (right)
+                allHistory = data.dataPoints.reverse();
+
+                // Setup slider: left = oldest, right = latest
+                const slider = document.getElementById('time-slider');
+                slider.max = allHistory.length - 1;
+                slider.value = allHistory.length - 1; // Start at latest (rightmost)
+
+                // Update UI
+                document.getElementById('time-controls').style.display = 'block';
+
+                updateTimeDisplay();
+                slider.addEventListener('input', () => {
+                    stopPlayback(); // Stop playback when user manually moves slider
+
+                    // Keep the label/count tracking the thumb immediately, but
+                    // debounce the network fetch. Firefox fires many more
+                    // 'input' events per drag than Chromium does, and without
+                    // this, each one aborts the previous in-flight snapshot
+                    // request (visible as NS_BINDING_ABORTED in devtools) and
+                    // the map can end up never applying any of them while
+                    // the user is still dragging.
+                    updateTimeDisplay();
+                    if (sliderDebounceTimer) {
+                        clearTimeout(sliderDebounceTimer);
+                    }
+                    sliderDebounceTimer = setTimeout(() => {
+                        sliderDebounceTimer = null;
+                        updateView();
+                    }, 120);
+                });
+
+                // Playback control listeners
+                document.getElementById('play-btn').addEventListener('click', togglePlayback);
+                document.getElementById('speed-select').addEventListener('change', onSpeedChange);
+
+                // Initial view - load latest
+                updateView();
+            } catch (error) {
+                console.error('Failed to load historical data:', error);
+            }
+        }
+
+        // Update time display in slider
+        function updateTimeDisplay() {
+            const slider = document.getElementById('time-slider');
+            const index = parseInt(slider.value);
+
+            if (allHistory.length === 0) return;
+
+            const currentData = allHistory[index];
+
+            document.getElementById('time-end-display').textContent = formatTime(currentData.timestamp);
+            document.getElementById('time-range-label').textContent = `${index + 1} / ${allHistory.length}`;
+        }
+
+        // Fetch snapshot data with caching
+        async function fetchSnapshot(timestamp, signal = null) {
+            const cacheKey = timestamp;
+            if (snapshotCache[cacheKey]) {
+                return snapshotCache[cacheKey];
+            }
+
+            const fetchOptions = signal ? { signal } : {};
+            const response = await fetch(
+                `/api/history/snapshot?timestamp=${encodeURIComponent(timestamp)}`,
+                fetchOptions
+            );
+
+            if (!response.ok) {
+                throw new Error(`Failed to load snapshot: ${response.status}`);
+            }
+
+            const data = await response.json();
+            snapshotCache[cacheKey] = data.stations || [];
+            return snapshotCache[cacheKey];
+        }
+
+        // Pre-fetch next snapshot for smoother playback
+        function prefetchNextSnapshot(currentIndex) {
+            if (currentIndex < allHistory.length - 1) {
+                const nextData = allHistory[currentIndex + 1];
+                const timestamp = new Date(nextData.timestamp).toISOString();
+                // Fire and forget - don't await
+                fetchSnapshot(timestamp).catch(() => {});
+            }
+        }
+
+        // Update map view based on slider position
+        async function updateView() {
+            updateTimeDisplay();
+
+            const slider = document.getElementById('time-slider');
+            const index = parseInt(slider.value);
+
+            if (allHistory.length === 0) return;
+
+            // Abort any pending snapshot request. We keep a local reference to
+            // the controller this call owns so that, once the fetch below
+            // resolves, we can tell whether a newer call has since taken
+            // over (and therefore whether it's still safe for us to apply
+            // our results and touch the loading indicator).
+            if (snapshotAbortController) {
+                snapshotAbortController.abort();
+            }
+            const thisController = new AbortController();
+            snapshotAbortController = thisController;
+
+            const indicator = document.getElementById('loading-indicator');
+            indicator.style.display = 'inline';
+
+            try {
+                const currentData = allHistory[index];
+                const timestamp = new Date(currentData.timestamp).toISOString();
+
+                // Fetch station data (uses cache if available)
+                const stations = await fetchSnapshot(timestamp, thisController.signal);
+
+                // A newer call may have superseded us while we were awaiting
+                // the fetch above (e.g. a cached response resolving out of
+                // order). Bail out rather than render a stale snapshot on
+                // top of a fresher one.
+                if (snapshotAbortController !== thisController) {
+                    return;
+                }
+
+                // Build lookup of previous station data for comparison
+                const previousStations = {};
+                currentStations.forEach(s => {
+                    previousStations[s.id] = s;
+                });
+
+                // Update info panel
+                document.getElementById('last-update').textContent =
+                    `${formatTime(currentData.timestamp)} (${currentData.totalBikes} bikes available)`;
+
+                // Update or create markers with smooth transitions
+                const updatedIds = new Set();
+                stations.forEach(station => {
+                    const comparison = previousStations[station.id]
+                        ? { oldBikes: previousStations[station.id].nbBikes }
+                        : null;
+
+                    if (markers[station.id]) {
+                        // Update existing marker (smooth transition via CSS)
+                        updateMarker(markers[station.id], station, comparison);
+                    } else {
+                        // Create new marker
+                        const marker = createMarker(station, comparison);
+                        marker.addTo(map);
+                        markers[station.id] = marker;
+                    }
+                    updatedIds.add(station.id);
+                });
+
+                // Remove markers that no longer exist in this snapshot
+                Object.keys(markers).forEach(id => {
+                    if (!updatedIds.has(parseInt(id))) {
+                        map.removeLayer(markers[id]);
+                        delete markers[id];
+                    }
+                });
+
+                // Store current stations for next comparison
+                currentStations = stations;
+
+                // Pre-fetch next snapshot during playback
+                if (isPlaying) {
+                    prefetchNextSnapshot(index);
+                }
+
+                console.log(`Updated ${stations.length} stations for ${formatTime(currentData.timestamp)}`);
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    console.log('Snapshot request aborted');
+                    return;
+                }
+                console.error('Failed to load snapshot data:', error);
+                document.getElementById('last-update').textContent = 'Failed to load snapshot data';
+            } finally {
+                // Only the most recent call owns the indicator. An older
+                // call that just got aborted must not hide it while a
+                // newer request is still legitimately in flight.
+                if (snapshotAbortController === thisController) {
+                    indicator.style.display = 'none';
+                }
+            }
+        }
+
+        // Playback controls
+        function startPlayback() {
+            if (allHistory.length === 0) return;
+
+            const slider = document.getElementById('time-slider');
+            const speedSelect = document.getElementById('speed-select');
+
+            // If at the end, restart from beginning
+            if (parseInt(slider.value) >= allHistory.length - 1) {
+                slider.value = 0;
+            }
+
+            isPlaying = true;
+            updatePlaybackUI();
+
+            // Pre-fetch first few snapshots
+            for (let i = 0; i < 3 && i < allHistory.length; i++) {
+                const data = allHistory[parseInt(slider.value) + i];
+                if (data) {
+                    fetchSnapshot(new Date(data.timestamp).toISOString()).catch(() => {});
+                }
+            }
+
+            // Advance one frame, then wait for that frame's fetch to actually
+            // finish before scheduling the next one. A plain setInterval here
+            // ticks on a fixed clock regardless of whether the previous
+            // snapshot request has resolved - on anything less than an
+            // instant network, each tick aborts the one before it (visible
+            // as NS_BINDING_ABORTED in Firefox) and the map never gets to
+            // apply any of them. This self-paces: it runs as fast as the
+            // chosen speed allows, but never faster than the network can
+            // actually deliver frames.
+            const scheduleNext = () => {
+                if (!isPlaying) return;
+                const interval = parseInt(speedSelect.value);
+                playbackInterval = setTimeout(step, interval);
+            };
+
+            const step = async () => {
+                if (!isPlaying) return;
+
+                const currentValue = parseInt(slider.value);
+                if (currentValue >= allHistory.length - 1) {
+                    stopPlayback();
+                    return;
+                }
+
+                slider.value = currentValue + 1;
+                await updateView();
+
+                scheduleNext();
+            };
+
+            scheduleNext();
+        }
+
+        function stopPlayback() {
+            isPlaying = false;
+            if (playbackInterval) {
+                // playbackInterval now holds a setTimeout id (see
+                // startPlayback's self-pacing scheduleNext/step chain).
+                clearTimeout(playbackInterval);
+                playbackInterval = null;
+            }
+            updatePlaybackUI();
+        }
+
+        function togglePlayback() {
+            if (isPlaying) {
+                stopPlayback();
+            } else {
+                startPlayback();
+            }
+        }
+
+        function updatePlaybackUI() {
+            const playIcon = document.getElementById('play-icon');
+            const playbackStatus = document.getElementById('playback-status');
+
+            if (isPlaying) {
+                playIcon.innerHTML = '&#10074;&#10074;'; // Pause icon
+                playbackStatus.textContent = 'Playing...';
+            } else {
+                playIcon.innerHTML = '&#9658;'; // Play icon
+                playbackStatus.textContent = '';
+            }
+        }
+
+        function onSpeedChange() {
+            if (isPlaying) {
+                stopPlayback();
+                startPlayback();
+            }
+        }
+
+        // Fetch and display latest stations initially
+        async function loadLatestStations() {
+            try {
+                const response = await fetch('/api/stations');
+                const data = await response.json();
+
+                // Update timestamp display
+                if (data.timestamp) {
+                    const date = new Date(data.timestamp);
+                    document.getElementById('last-update').textContent =
+                        `Updated: ${date.toLocaleString()}`;
+                }
+
+                // Add markers for all stations
+                data.stations.forEach(station => {
+                    const marker = createMarker(station);
+                    marker.addTo(map);
+                    markers[station.id] = marker;
+                });
+
+                console.log(`Loaded ${data.stations.length} stations`);
+            } catch (error) {
+                console.error('Failed to load stations:', error);
+                document.getElementById('last-update').textContent = 'Failed to load data';
+            }
+        }
+
+        // Initialize
+        async function initialize() {
+            await loadLatestStations();
+            await loadHistoricalData();
+        }
+
+        // Load on page load
+        initialize();
+    </script>
+</body>
+</html>
