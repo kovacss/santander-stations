@@ -12,18 +12,41 @@
             padding: 0;
             box-sizing: border-box;
         }
-        body {
+        html, body {
+            height: 100%;
+            overflow: hidden; /* no page bounce/scroll on mobile - the map is the whole viewport */
+            overscroll-behavior: none;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
         #map {
             height: 100vh;
             width: 100%;
+            touch-action: none; /* Leaflet handles pan/pinch-zoom itself; this stops the browser's own gesture handling from fighting it on mobile */
         }
-        .info-panel {
+        /* Wrapper for the two top panels. A flex row that wraps lets them
+           sit side by side when there's room and stack full-width when
+           there isn't (narrow phones), with no fixed breakpoint to keep in
+           sync with either panel's content. pointer-events is off on the
+           wrapper itself (it spans the full width, most of which is empty
+           gap over the map) and back on for the panels, so map clicks/drags
+           in that gap still reach the map underneath. */
+        .top-panels {
             position: absolute;
             top: 10px;
+            left: 10px;
             right: 10px;
             z-index: 1000;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            pointer-events: none;
+        }
+        .top-panels > * {
+            pointer-events: auto;
+        }
+        .info-panel {
             background: white;
             padding: 12px 16px;
             border-radius: 8px;
@@ -200,25 +223,113 @@
         .leaflet-interactive {
             transition: fill 0.3s ease, fill-opacity 0.3s ease, stroke 0.3s ease;
         }
+
+        /* Trip preview */
+        .trip-panel {
+            background: white;
+            padding: 12px 16px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            font-size: 14px;
+            width: 280px;
+            max-width: 100%;
+        }
+        .trip-toggle-btn {
+            display: block;
+            width: 100%;
+            padding: 10px 12px; /* >= 44px tall with font-size/line-height, a reasonable touch target */
+            border: none;
+            border-radius: 6px;
+            background: #007BFF;
+            color: white;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .trip-toggle-btn:hover {
+            background: #0056b3;
+        }
+        .trip-toggle-btn.cancel {
+            background: #6c757d;
+        }
+        .trip-toggle-btn.cancel:hover {
+            background: #545b62;
+        }
+        .trip-instructions {
+            margin-top: 10px;
+            font-size: 13px;
+            color: #555;
+        }
+        .trip-result {
+            margin-top: 10px;
+            font-size: 13px;
+        }
+        .trip-leg {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            margin: 6px 0;
+        }
+        .trip-leg .trip-leg-label {
+            color: #555;
+        }
+        .trip-leg .trip-leg-value {
+            font-weight: 600;
+            text-align: right;
+        }
+        .trip-ride {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #eee;
+            font-weight: 600;
+            color: #007BFF;
+        }
+        .trip-error {
+            color: #F44336;
+            font-size: 13px;
+        }
+        .trip-marker-pin {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            color: white;
+            font-weight: 700;
+            font-size: 13px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+            border: 2px solid white;
+        }
+        .trip-marker-pin.start { background: #007BFF; }
+        .trip-marker-pin.end { background: #9C27B0; }
     </style>
 </head>
 <body>
     <div id="map"></div>
-    <div class="info-panel">
-        <h3>Santander Cycles</h3>
-        <div id="last-update">Loading...</div>
-        <div class="legend">
-            <div class="legend-item">
-                <div class="legend-dot" style="background: #4CAF50;"></div>
-                <span>Available</span>
-            </div>
-            <div class="legend-item">
-                <div class="legend-dot" style="background: #FFC107;"></div>
-                <span>Low</span>
-            </div>
-            <div class="legend-item">
-                <div class="legend-dot" style="background: #F44336;"></div>
-                <span>Empty</span>
+    <div class="top-panels">
+        <div class="trip-panel" id="trip-panel">
+            <button id="trip-toggle-btn" class="trip-toggle-btn">&#128690; Plan a Trip</button>
+            <div id="trip-instructions" class="trip-instructions" style="display: none;"></div>
+            <div id="trip-result" class="trip-result" style="display: none;"></div>
+        </div>
+        <div class="info-panel">
+            <h3>Santander Cycles</h3>
+            <div id="last-update">Loading...</div>
+            <div class="legend">
+                <div class="legend-item">
+                    <div class="legend-dot" style="background: #4CAF50;"></div>
+                    <span>Available</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot" style="background: #FFC107;"></div>
+                    <span>Low</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot" style="background: #F44336;"></div>
+                    <span>Empty</span>
+                </div>
             </div>
         </div>
     </div>
@@ -262,6 +373,16 @@
         let playbackInterval = null;
         let currentStations = []; // Current station data for smooth updates
         let sliderDebounceTimer = null; // Debounce timer for slider drag events
+
+        // Trip preview state
+        let tripMode = null; // null | 'picking-start' | 'picking-end'
+        let tripStartLatLng = null;
+        let tripEndLatLng = null;
+        let tripStartMarker = null;
+        let tripEndMarker = null;
+        let tripPickupHighlight = null;
+        let tripDropoffHighlight = null;
+        let tripLines = [];
 
         // Initialize map centered on London
         const map = L.map('map').setView([51.505, -0.09], 13);
@@ -312,6 +433,18 @@
             marker.stationData = station; // Store station data for updates
 
             updateMarkerPopup(marker, station, comparison);
+
+            // Leaflet's own popup-toggle handling keeps a marker click from
+            // reaching the map's click event, so without this, clicking any
+            // of the ~800 densely-packed stations (very easy to do) would
+            // silently do nothing while picking a trip point. Using the
+            // marker's own coordinates (rather than the click's) also means
+            // clicking a station directly sets the trip point exactly there.
+            marker.on('click', () => {
+                if (tripMode) {
+                    handleMapClickForTrip(marker.getLatLng());
+                }
+            });
 
             return marker;
         }
@@ -687,6 +820,221 @@
                 startPlayback();
             }
         }
+
+        // ------------------------------------------------------------------
+        // Trip preview: pick a start and end point on the map, and find the
+        // nearest station with a bike available near the start and the
+        // nearest station with a free dock near the end. Client-side only -
+        // it works against whatever stations are currently rendered
+        // (live data, or a historical snapshot if one's loaded), with no
+        // new API endpoint.
+        // ------------------------------------------------------------------
+
+        // Great-circle distance between two points, in meters.
+        function haversineMeters(lat1, lon1, lat2, lon2) {
+            const R = 6371000; // Earth radius, meters
+            const toRad = deg => deg * Math.PI / 180;
+            const dLat = toRad(lat2 - lat1);
+            const dLon = toRad(lon2 - lon1);
+            const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        }
+
+        function formatDistance(meters) {
+            if (meters < 1000) return `${Math.round(meters)} m`;
+            return `${(meters / 1000).toFixed(1)} km`;
+        }
+
+        // Rough travel time at a given average speed (km/h), rounded to the
+        // nearest minute (minimum 1, so a short hop doesn't read as "0 min").
+        function estimateMinutes(meters, kmh) {
+            return Math.max(1, Math.round((meters / 1000) / kmh * 60));
+        }
+
+        // Finds the station closest to latlng among candidates ({lat, lng, ...}).
+        // Returns { station, distance } or null if candidates is empty.
+        function nearestStation(latlng, candidates) {
+            let best = null;
+            let bestDistance = Infinity;
+            for (const station of candidates) {
+                const distance = haversineMeters(latlng.lat, latlng.lng, station.lat, station.lng);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    best = station;
+                }
+            }
+            return best ? { station: best, distance: bestDistance } : null;
+        }
+
+        function tripMarkerIcon(label, which) {
+            return L.divIcon({
+                className: '',
+                html: `<div class="trip-marker-pin ${which}">${label}</div>`,
+                iconSize: [26, 26],
+                iconAnchor: [13, 13]
+            });
+        }
+
+        function setTripToggleButton(label, mode) {
+            const btn = document.getElementById('trip-toggle-btn');
+            btn.textContent = label;
+            btn.classList.toggle('cancel', mode === 'cancel');
+        }
+
+        function updateTripInstructions() {
+            const instructions = document.getElementById('trip-instructions');
+            if (tripMode === 'picking-start') {
+                instructions.textContent = 'Click the map to set your start point.';
+                instructions.style.display = 'block';
+            } else if (tripMode === 'picking-end') {
+                instructions.textContent = 'Now click the map to set your destination.';
+                instructions.style.display = 'block';
+            } else {
+                instructions.style.display = 'none';
+            }
+        }
+
+        function startTripPlanning() {
+            clearTrip();
+            tripMode = 'picking-start';
+            map.getContainer().style.cursor = 'crosshair';
+            setTripToggleButton('Cancel', 'cancel');
+            updateTripInstructions();
+        }
+
+        function setTripPoint(which, latlng) {
+            const marker = L.marker(latlng, { icon: tripMarkerIcon(which === 'start' ? 'A' : 'B', which) }).addTo(map);
+            if (which === 'start') {
+                if (tripStartMarker) map.removeLayer(tripStartMarker);
+                tripStartMarker = marker;
+                tripStartLatLng = latlng;
+            } else {
+                if (tripEndMarker) map.removeLayer(tripEndMarker);
+                tripEndMarker = marker;
+                tripEndLatLng = latlng;
+            }
+        }
+
+        function handleMapClickForTrip(latlng) {
+            map.closePopup(); // don't leave a station popup lingering over the trip markers
+            if (tripMode === 'picking-start') {
+                setTripPoint('start', latlng);
+                tripMode = 'picking-end';
+                updateTripInstructions();
+            } else if (tripMode === 'picking-end') {
+                setTripPoint('end', latlng);
+                tripMode = null;
+                map.getContainer().style.cursor = '';
+                updateTripInstructions();
+                computeTrip();
+            }
+        }
+
+        function computeTrip() {
+            const resultEl = document.getElementById('trip-result');
+            const stations = Object.values(markers)
+                .map(m => m.stationData)
+                .filter(Boolean);
+
+            const pickupCandidates = stations.filter(s => s.nbBikes > 0);
+            const dropoffCandidates = stations.filter(s => s.nbEmptyDocks > 0);
+
+            const pickup = nearestStation(tripStartLatLng, pickupCandidates);
+            const dropoff = nearestStation(tripEndLatLng, dropoffCandidates);
+
+            if (!pickup || !dropoff) {
+                resultEl.innerHTML = `<div class="trip-error">No nearby station with ${!pickup ? 'an available bike' : 'a free dock'} right now.</div>`;
+                resultEl.style.display = 'block';
+                setTripToggleButton('Clear Trip', 'cancel');
+                return;
+            }
+
+            // Highlight the chosen stations with a ring around their marker,
+            // without touching the marker itself (so live/historical updates
+            // to that station keep working normally).
+            if (tripPickupHighlight) map.removeLayer(tripPickupHighlight);
+            if (tripDropoffHighlight) map.removeLayer(tripDropoffHighlight);
+            tripPickupHighlight = L.circleMarker([pickup.station.lat, pickup.station.lng], {
+                radius: 14, color: '#007BFF', weight: 3, fill: false, dashArray: '4,4'
+            }).addTo(map);
+            tripDropoffHighlight = L.circleMarker([dropoff.station.lat, dropoff.station.lng], {
+                radius: 14, color: '#9C27B0', weight: 3, fill: false, dashArray: '4,4'
+            }).addTo(map);
+
+            // Walk -> pickup station -> ride -> dropoff station -> walk.
+            tripLines.forEach(line => map.removeLayer(line));
+            tripLines = [
+                L.polyline([tripStartLatLng, [pickup.station.lat, pickup.station.lng]], { color: '#007BFF', dashArray: '4,6', weight: 3 }).addTo(map),
+                L.polyline([[pickup.station.lat, pickup.station.lng], [dropoff.station.lat, dropoff.station.lng]], { color: '#333', weight: 3 }).addTo(map),
+                L.polyline([[dropoff.station.lat, dropoff.station.lng], tripEndLatLng], { color: '#9C27B0', dashArray: '4,6', weight: 3 }).addTo(map)
+            ];
+
+            map.fitBounds(L.latLngBounds([
+                tripStartLatLng, tripEndLatLng,
+                [pickup.station.lat, pickup.station.lng],
+                [dropoff.station.lat, dropoff.station.lng]
+            ]), { padding: [40, 40] });
+
+            const rideMeters = haversineMeters(
+                pickup.station.lat, pickup.station.lng,
+                dropoff.station.lat, dropoff.station.lng
+            );
+            const totalMinutes = estimateMinutes(pickup.distance, 5) +
+                estimateMinutes(rideMeters, 15) +
+                estimateMinutes(dropoff.distance, 5);
+
+            resultEl.innerHTML = `
+                <div class="trip-leg">
+                    <span class="trip-leg-label">&#128694; Walk to ${pickup.station.name}</span>
+                    <span class="trip-leg-value">${formatDistance(pickup.distance)}<br>(${pickup.station.nbBikes} bikes)</span>
+                </div>
+                <div class="trip-leg">
+                    <span class="trip-leg-label">&#128690; Ride to ${dropoff.station.name}</span>
+                    <span class="trip-leg-value">${formatDistance(rideMeters)}</span>
+                </div>
+                <div class="trip-leg">
+                    <span class="trip-leg-label">&#128694; Walk to destination</span>
+                    <span class="trip-leg-value">${formatDistance(dropoff.distance)}<br>(${dropoff.station.nbEmptyDocks} docks free)</span>
+                </div>
+                <div class="trip-ride">Roughly ${totalMinutes} min total</div>
+            `;
+            resultEl.style.display = 'block';
+            setTripToggleButton('Clear Trip', 'cancel');
+        }
+
+        function clearTrip() {
+            tripMode = null;
+            tripStartLatLng = null;
+            tripEndLatLng = null;
+            map.getContainer().style.cursor = '';
+
+            [tripStartMarker, tripEndMarker, tripPickupHighlight, tripDropoffHighlight, ...tripLines]
+                .forEach(layer => { if (layer) map.removeLayer(layer); });
+            tripStartMarker = null;
+            tripEndMarker = null;
+            tripPickupHighlight = null;
+            tripDropoffHighlight = null;
+            tripLines = [];
+
+            document.getElementById('trip-instructions').style.display = 'none';
+            document.getElementById('trip-result').style.display = 'none';
+            setTripToggleButton('\u{1F6B2} Plan a Trip', 'start');
+        }
+
+        document.getElementById('trip-toggle-btn').addEventListener('click', () => {
+            if (tripMode || tripStartLatLng || tripEndLatLng) {
+                clearTrip();
+            } else {
+                startTripPlanning();
+            }
+        });
+
+        map.on('click', (e) => {
+            if (tripMode) {
+                handleMapClickForTrip(e.latlng);
+            }
+        });
 
         // Fetch and display latest stations initially
         async function loadLatestStations() {
