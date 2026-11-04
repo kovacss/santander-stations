@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Test
+        run: cargo test --verbose
+
+  cf-worker-build:
+    name: Build check (cf-worker, wasm32)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cf-worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cf-worker
+
+      # Compile-check only (not `worker-build`/wasm-opt/esbuild): fast, and
+      # sufficient to catch the code breaking. Its wasm32 unit tests can't
+      # run here either, same reason - no wasm-bindgen-test runner set up
+      # (see cf-worker/README.md).
+      - name: Check
+        run: cargo check --target wasm32-unknown-unknown --verbose
