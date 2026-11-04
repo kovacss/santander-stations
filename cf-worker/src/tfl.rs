@@ -20,15 +20,91 @@
 //! `Station`/`Stations` structs - the same two the D1 schema in `db.rs` and
 //! the JSON API contract in `lib.rs` are written against - so nothing
 //! downstream of `fetch_stations()` needed to change.
+//!
+//! This API does rate-limit (`429 Rate limit is exceeded`), seen for real on
+//! the collector cron once traffic picked up. `fetch_stations()` retries a
+//! 429, a 5xx, or a network-level send failure with exponential backoff -
+//! see `fetch_body()` below. A 403 Managed Challenge (the reason this file
+//! isn't hitting the XML feed at all) is deliberately *not* retried: a
+//! second attempt wouldn't satisfy a JS challenge either, so retrying it
+//! would only waste the Worker's time budget.
+
+use std::time::Duration;
 
 use serde::Deserialize;
-use worker::{console_error, console_log, Fetch, Headers, Method, Request, RequestInit, Result};
+use worker::{console_error, console_log, Delay, Fetch, Headers, Method, Request, RequestInit, Result};
 
 /// TfL's Unified API: all BikePoints in one call.
 const TFL_ENDPOINT: &str = "https://api.tfl.gov.uk/BikePoint/";
 
+/// Retry up to this many times (so up to `MAX_RETRIES + 1` attempts total)
+/// on a transient failure.
+const MAX_RETRIES: u32 = 3;
+
+/// Backoff base. TfL's own 429 response suggests "Try again in 2 seconds",
+/// so retries wait 2s, 4s, 8s (doubling each time) rather than starting
+/// from something arbitrary.
+const RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
+
 /// Fetches and parses the current station data from the TFL BikePoint API.
 pub async fn fetch_stations() -> Result<Stations> {
+    let body = fetch_body().await?;
+
+    let bike_points: Vec<BikePoint> = serde_json::from_str(&body)
+        .map_err(|err| worker::Error::RustError(format!("failed to parse TFL JSON: {err}")))?;
+
+    Ok(Stations {
+        stations: bike_points.iter().map(Station::from).collect(),
+    })
+}
+
+/// An error from a single fetch attempt, tagged with whether it's worth
+/// retrying. Errors from `worker`'s own plumbing (setting a header, sending
+/// the request) default to retryable - they're generally a transient
+/// network blip rather than something a retry can't fix.
+struct FetchError {
+    retryable: bool,
+    error: worker::Error,
+}
+
+impl From<worker::Error> for FetchError {
+    fn from(error: worker::Error) -> Self {
+        FetchError { retryable: true, error }
+    }
+}
+
+/// A 429 (rate limited) or a 5xx (server-side issue) is worth retrying;
+/// anything else - notably a 403 - is not.
+fn is_retryable_status(status: u16) -> bool {
+    status == 429 || (500..600).contains(&status)
+}
+
+/// Fetches the raw response body, retrying transient failures (see
+/// `is_retryable_status` and `FetchError`'s default) with exponential
+/// backoff.
+async fn fetch_body() -> Result<String> {
+    let mut attempt = 0;
+
+    loop {
+        match fetch_once().await {
+            Ok(body) => return Ok(body),
+            Err(FetchError { retryable, error }) => {
+                if !retryable || attempt >= MAX_RETRIES {
+                    return Err(error);
+                }
+                attempt += 1;
+                let delay = RETRY_BASE_DELAY * 2u32.pow(attempt - 1); // 2s, 4s, 8s
+                console_error!(
+                    "TFL fetch failed ({error}); retrying in {delay:?} (attempt {attempt}/{MAX_RETRIES})"
+                );
+                Delay::from(delay).await;
+            }
+        }
+    }
+}
+
+/// A single fetch attempt.
+async fn fetch_once() -> std::result::Result<String, FetchError> {
     let headers = Headers::new();
     headers.set("Accept", "application/json")?;
     headers.set(
@@ -41,29 +117,23 @@ pub async fn fetch_stations() -> Result<Stations> {
     init.with_method(Method::Get).with_headers(headers);
 
     let request = Request::new_with_init(TFL_ENDPOINT, &init)?;
-    let mut response = Fetch::Request(request).send().await?;
+    let mut response = Fetch::Request(request).send().await?; // network-level failure - retryable
 
-    console_log!("TFL response: status={}", response.status_code());
+    let status = response.status_code();
+    console_log!("TFL response: status={status}");
 
-    if response.status_code() != 200 {
+    if status != 200 {
         let body = response.text().await.unwrap_or_default();
         let snippet: String = body.chars().take(500).collect();
         console_error!("TFL response body (first 500 chars): {snippet}");
 
-        return Err(worker::Error::RustError(format!(
-            "unexpected status code from TFL: {}",
-            response.status_code()
-        )));
+        return Err(FetchError {
+            retryable: is_retryable_status(status),
+            error: worker::Error::RustError(format!("unexpected status code from TFL: {status}")),
+        });
     }
 
-    let body = response.text().await?;
-
-    let bike_points: Vec<BikePoint> = serde_json::from_str(&body)
-        .map_err(|err| worker::Error::RustError(format!("failed to parse TFL JSON: {err}")))?;
-
-    Ok(Stations {
-        stations: bike_points.iter().map(Station::from).collect(),
-    })
+    Ok(response.text().await?)
 }
 
 /// A collection of stations, mirroring the tokio implementation's
@@ -156,6 +226,18 @@ fn parse_station_id(id: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retryable_statuses_are_429_and_5xx_only() {
+        assert!(is_retryable_status(429));
+        assert!(is_retryable_status(500));
+        assert!(is_retryable_status(503));
+        assert!(is_retryable_status(599));
+        assert!(!is_retryable_status(403)); // Managed Challenge - retrying never helps
+        assert!(!is_retryable_status(404));
+        assert!(!is_retryable_status(400));
+        assert!(!is_retryable_status(200));
+    }
 
     #[test]
     fn parses_a_bikepoint_into_a_station() {
